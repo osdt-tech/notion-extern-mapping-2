@@ -1,0 +1,17 @@
+gcloud scheduler jobs create http notion-to-bq-daily `
+  --location=europe-west3 `
+  --schedule="0 6 * * *" `
+  --time-zone="Europe/Berlin" `
+  --uri="https://notion-to-bq-tmmn2n52pa-ey.a.run.app" `
+  --http-method=POST `
+  --oidc-service-account-email="DEIN-SERVICE-ACCOUNT@PROJEKT.iam.gserviceaccount.com" `
+  --oidc-token-audience="https://REGION-PROJEKT.cloudfunctions.net/notion-to-bq"
+
+  gcloud functions call notion-to-bq --gen2 --region=europe-west3
+
+  # URL der Function holen
+$url = gcloud functions describe notion-to-bq --gen2 --region=europe-west3 --format="value(serviceConfig.uri)"
+
+# Token holen & Function aufrufen
+$token = gcloud auth print-identity-token
+Invoke-WebRequest -Uri $url -Method POST -Headers @{ Authorization = "Bearer $token" }
