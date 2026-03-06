@@ -18,6 +18,8 @@ const CONCURRENCY   = parseInt(process.env.CONCURRENCY   || '2',   10); // paral
 const BQ_BATCH_SIZE = parseInt(process.env.BQ_BATCH_SIZE || '500', 10); // Rows pro Insert
 const BQ_LOCATION   = process.env.BQ_LOCATION || 'EU';
 const MAX_PAGES     = parseInt(process.env.MAX_PAGES     || '0',   10); // 0 = alle
+const SYNC_SINCE    = process.env.SYNC_SINCE || 'today';             // 'today', 'yesterday', oder ISO-String
+const FUNCTION_SECRET = (process.env.FUNCTION_SECRET || '').trim();
 
 if (!DATABASE_ID || !BQ_PROJECT_ID || !BQ_DATASET) {
   console.error('Fehlende Pflicht-Variablen: NOTION_DATA_SOURCE_ID, BQ_PROJECT_ID, BQ_DATASET');
@@ -77,6 +79,57 @@ function richText(arr) {
 const titleCache = new Map();
 
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+
+/** Berechnet das Start-Datum für den Sync-Filter */
+function getSyncStartDate() {
+  if (SYNC_SINCE === 'all') return null;
+
+  const now = new Date();
+  let startDate;
+
+  if (SYNC_SINCE === 'today') {
+    // Heute 00:00 UTC
+    startDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  } else if (SYNC_SINCE === 'yesterday') {
+    // Gestern 00:00 UTC
+    startDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 1));
+  } else {
+    // ISO-String oder Custom-Datum
+    startDate = new Date(SYNC_SINCE);
+    if (Number.isNaN(startDate.getTime())) {
+      throw new Error(
+        `Ungueltiger SYNC_SINCE Wert: "${SYNC_SINCE}". Erlaubt: today, yesterday, all oder ISO-String.`
+      );
+    }
+  }
+
+  return startDate.toISOString();
+}
+
+function getProvidedSecret(req) {
+  const headerSecret = req.get('x-function-secret');
+  if (headerSecret) return String(headerSecret).trim();
+
+  const authHeader = req.get('authorization');
+  if (authHeader && /^Bearer\s+/i.test(authHeader)) {
+    return authHeader.replace(/^Bearer\s+/i, '').trim();
+  }
+
+  if (typeof req.query?.secret === 'string' && req.query.secret) {
+    return req.query.secret.trim();
+  }
+
+  if (typeof req.body?.secret === 'string' && req.body.secret) {
+    return req.body.secret.trim();
+  }
+
+  return '';
+}
+
+function isAuthorizedRequest(req) {
+  if (!FUNCTION_SECRET) return true;
+  return getProvidedSecret(req) === FUNCTION_SECRET;
+}
 
 async function resolveTitle(pageId) {
   if (titleCache.has(pageId)) return titleCache.get(pageId);
@@ -287,17 +340,118 @@ function buildSchema(dbProps) {
   return fields;
 }
 
-// ─── Notion: Alle Seiten laden ────────────────────────────────────────────────
+/** Normalisiert einen JS-Wert entsprechend des echten BigQuery-Feldtyps */
+function normalizeForField(value, fieldDef) {
+  if (!fieldDef) return value ?? null;
+
+  if (fieldDef.mode === 'REPEATED') {
+    if (value == null) return [];
+    return Array.isArray(value) ? value : [value];
+  }
+
+  if (value == null) return null;
+
+  const temporalTypes = new Set(['TIMESTAMP', 'DATE', 'DATETIME', 'TIME']);
+
+  // Scalar-Felder duerfen kein Array enthalten.
+  if (Array.isArray(value)) {
+    if (fieldDef.type === 'STRING') {
+      return value.some((v) => v !== null && typeof v === 'object')
+        ? JSON.stringify(value)
+        : value.join(', ');
+    }
+
+    const first = value.length > 0 ? value[0] : null;
+    if (first == null) return null;
+
+    if (fieldDef.type === 'BOOL') {
+      if (typeof first === 'boolean') return first;
+      if (typeof first === 'string') {
+        if (/^(true|1)$/i.test(first)) return true;
+        if (/^(false|0)$/i.test(first)) return false;
+      }
+      return null;
+    }
+
+    if (['FLOAT64', 'NUMERIC', 'BIGNUMERIC', 'INT64'].includes(fieldDef.type)) {
+      const parsed = Number(first);
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+
+    if (temporalTypes.has(fieldDef.type)) {
+      return typeof first === 'string' ? first : null;
+    }
+
+    if (fieldDef.type === 'RECORD' && typeof first === 'object') {
+      return first;
+    }
+
+    return null;
+  }
+
+  // Scalar-Felder duerfen kein Objekt enthalten (ausser RECORD).
+  if (typeof value === 'object') {
+    if (fieldDef.type === 'RECORD') return value;
+    if (fieldDef.type === 'STRING') return JSON.stringify(value);
+
+    if (temporalTypes.has(fieldDef.type)) {
+      if (typeof value.start === 'string') return value.start;
+      if (typeof value.end === 'string') return value.end;
+      return null;
+    }
+
+    return null;
+  }
+
+  if (['FLOAT64', 'NUMERIC', 'BIGNUMERIC', 'INT64'].includes(fieldDef.type)) {
+    if (typeof value === 'number') return value;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  if (fieldDef.type === 'BOOL') {
+    if (typeof value === 'boolean') return value;
+    if (typeof value === 'string') {
+      if (/^(true|1)$/i.test(value)) return true;
+      if (/^(false|0)$/i.test(value)) return false;
+    }
+    return null;
+  }
+
+  return value;
+}
+
+// ─── Notion: Seiten laden (gefiltert nach last_edited_time) ─────────────────
 async function fetchAllPages() {
   const pages = [];
   let cursor;
   const batchSize = MAX_PAGES > 0 ? Math.min(MAX_PAGES, 100) : 100;
+  const syncStartDate = getSyncStartDate();
+
+  if (syncStartDate) {
+    console.log(`  Filter: last_edited_time >= ${syncStartDate}`);
+  } else {
+    console.log('  Filter: kein Zeitfilter (SYNC_SINCE=all)');
+  }
+  
   do {
-    const res = await notion.dataSources.query({
+    const queryOpts = {
       data_source_id: DATABASE_ID,
       start_cursor: cursor,
       page_size: batchSize,
-    });
+    };
+    
+    // Filter nach last_edited_time hinzufügen
+    if (syncStartDate) {
+      queryOpts.filter = {
+        timestamp: 'last_edited_time',
+        last_edited_time: {
+          on_or_after: syncStartDate,
+        },
+      };
+    }
+    
+    const res = await notion.dataSources.query(queryOpts);
     pages.push(...res.results);
     if (MAX_PAGES > 0 && pages.length >= MAX_PAGES) {
       pages.splice(MAX_PAGES);
@@ -367,25 +521,61 @@ async function ensureTable(tableName, schema) {
     });
     console.log(`  → Tabelle erstellt.`);
   } else {
-    console.log(`  → Tabelle "${BQ_DATASET}.${tableName}" existiert bereits. Daten werden HINZUGEFÜGT.`);
+    const [meta] = await tbl.getMetadata();
+    const existing = new Set((meta.schema?.fields ?? []).map((f) => f.name));
+    const newFields = schema.filter((f) => !existing.has(f.name));
+
+    if (newFields.length > 0) {
+      meta.schema = meta.schema || { fields: [] };
+      meta.schema.fields = meta.schema.fields || [];
+      meta.schema.fields.push(...newFields);
+      await tbl.setMetadata(meta);
+      console.log(`  → Tabelle erweitert um ${newFields.length} Spalte(n).`);
+    } else {
+      console.log(`  → Tabelle "${BQ_DATASET}.${tableName}" existiert bereits. Schema unverändert.`);
+    }
   }
   return tbl;
 }
 
-// ─── BigQuery: Streaming-Insert mit Fehlerbehandlung ─────────────────────────
-async function streamInsert(tbl, rows) {
+// ─── BigQuery: Batch-Load (vermeidet Streaming Buffer Probleme) ─────────────
+async function batchLoad(tbl, rows) {
+  const fs = require('fs/promises');
+  const os = require('os');
+  const path = require('path');
+
+  // NDJSON temporär lokal speichern und als Load-Job hochladen.
+  const tempFile = path.join(
+    os.tmpdir(),
+    `notion-bq-${Date.now()}-${Math.random().toString(16).slice(2)}.ndjson`
+  );
+
+  const ndjson = `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`;
+
   try {
-    await tbl.insert(rows, { skipInvalidRows: false, ignoreUnknownValues: false });
+    await fs.writeFile(tempFile, ndjson, 'utf8');
+
+    const [job] = await tbl.load(tempFile, {
+      sourceFormat: 'NEWLINE_DELIMITED_JSON',
+      ignoreUnknownValues: true,
+      writeDisposition: 'WRITE_APPEND',
+    });
+
+    if (job?.id) {
+      console.log(`  → Load-Job gestartet: ${job.id}`);
+    }
   } catch (err) {
-    if (err.name === 'PartialFailureError') {
-      console.error(`\n  PartialFailureError (${err.errors?.length ?? 0} Zeilen betroffen):`);
+    // Formatiere BigQuery Load-Job Fehler
+    if (err.errors) {
+      console.error(`\n  BigQuery Load-Fehler (${err.errors?.length ?? 0} Fehler):`);
       (err.errors ?? []).slice(0, 5).forEach((e) => {
-        console.error(`    row ${e.index}: ${JSON.stringify(e.errors?.map((x) => x.message))}`);
+        console.error(`    ${e.message}`);
       });
       if ((err.errors?.length ?? 0) > 5) console.error(`    ... und ${err.errors.length - 5} weitere.`);
-    } else {
-      throw err;
     }
+    throw err;
+  } finally {
+    await fs.unlink(tempFile).catch(() => {});
   }
 }
 
@@ -414,9 +604,10 @@ async function main() {
   const schema = buildSchema(dbProps);
   const tbl    = await ensureTable(tableName, schema);
 
-  // Lookup: BQ-Feldname → Modus (für REPEATED-Normalisierung)
-  const fieldModeByName = {};
-  for (const f of schema) fieldModeByName[f.name] = f.mode;
+  // Lookup: ECHTES Tabellen-Schema (wichtig bei Legacy-Spaltenmodi)
+  const [tblMeta] = await tbl.getMetadata();
+  const tableFieldByName = {};
+  for (const f of (tblMeta.schema?.fields ?? [])) tableFieldByName[f.name] = f;
 
   // ── 3. Alle Notion-Seiten laden ────────────────────────────────────────────
   console.log('\n3/6  Alle Notion-Seiten laden...');
@@ -454,19 +645,36 @@ async function main() {
           const prop    = page.properties[propName];
           // propId für Pagination bei Relationen
           const propId  = prop?.id ?? propMeta?.id;
+          const fieldDef = tableFieldByName[colName];
+
+          if (!fieldDef) continue;
 
           try {
             let value = await propValue(page.id, propId, prop);
-
-            // REPEATED-Felder dürfen nie null sein
-            if (fieldModeByName[colName] === 'REPEATED') {
-              row[colName] = Array.isArray(value) ? value : [];
-            } else {
-              row[colName] = value ?? null;
-            }
+            row[colName] = normalizeForField(value, fieldDef);
           } catch (err) {
             console.warn(`\n  Warnung [${page.id}] "${propName}": ${err.message}`);
-            row[colName] = fieldModeByName[colName] === 'REPEATED' ? [] : null;
+            row[colName] = fieldDef.mode === 'REPEATED' ? [] : null;
+          }
+        }
+
+        // Legacy-/Pflichtfelder im bestehenden BQ-Schema absichern.
+        for (const fieldDef of Object.values(tableFieldByName)) {
+          if (fieldDef.mode !== 'REQUIRED') continue;
+          if (row[fieldDef.name] != null) continue;
+
+          if (fieldDef.name === 'page_id') {
+            row[fieldDef.name] = page.id;
+          } else if (fieldDef.name === '_synced_at' || fieldDef.name === 'synced_at') {
+            row[fieldDef.name] = syncedAt;
+          } else if (fieldDef.mode === 'REPEATED') {
+            row[fieldDef.name] = [];
+          } else if (fieldDef.type === 'BOOL') {
+            row[fieldDef.name] = false;
+          } else if (['FLOAT64', 'NUMERIC', 'BIGNUMERIC', 'INT64'].includes(fieldDef.type)) {
+            row[fieldDef.name] = 0;
+          } else {
+            row[fieldDef.name] = '';
           }
         }
 
@@ -481,16 +689,14 @@ async function main() {
   console.log();
   console.log(`     ${rows.length} Zeilen bereit.`);
 
-  // ── 6. In BigQuery schreiben ───────────────────────────────────────────────
-  console.log('\n6/6  Schreibe in BigQuery...');
-  let inserted = 0;
-  for (let i = 0; i < rows.length; i += BQ_BATCH_SIZE) {
-    const batch = rows.slice(i, i + BQ_BATCH_SIZE);
-    await streamInsert(tbl, batch);
-    inserted += batch.length;
-    process.stdout.write(`\r  → ${inserted}/${rows.length} Zeilen eingefügt`);
+  // ── 6. In BigQuery schreiben (Batch-Load statt Streaming) ──────────────────
+  console.log('\n6/6  Lade in BigQuery...');
+  if (rows.length > 0) {
+    await batchLoad(tbl, rows);
+    console.log(`  → ${rows.length} Zeilen geladen.`);
+  } else {
+    console.log('  → Keine Zeilen zum Laden vorhanden.');
   }
-  console.log();
 
   const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
   console.log('\n═══════════════════════════════════════════════════');
@@ -500,15 +706,20 @@ async function main() {
 }
 
 // ─── Cloud Function Export (HTTP-Trigger für Cloud Scheduler) ────────────────
-exports.notionToBq = async (req, res) => {
-  try {
-    await main();
-    res.status(200).send('OK');
-  } catch (err) {
+exports.notionToBq = (req, res) => {
+  if (!isAuthorizedRequest(req)) {
+    res.status(403).send('Forbidden');
+    return;
+  }
+
+  // Sofort OK senden, damit Google Apps Script nicht in ein Timeout läuft.
+  res.status(200).send('OK – Sync gestartet');
+
+  // Sync im Hintergrund ausführen.
+  main().catch((err) => {
     console.error('\n✗ Fehler:', err.message);
     if (err.errors) console.error('  Details:', JSON.stringify(err.errors, null, 2));
-    res.status(500).send(err.message);
-  }
+  });
 };
 
 // ─── Lokale Ausführung (node notion-to-bq.js) ─────────────────────────────────

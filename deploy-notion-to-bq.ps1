@@ -30,8 +30,12 @@ if ($envVars["GOOGLE_APPLICATION_CREDENTIALS"]) {
 }
 
 # Optionale Variablen
-foreach ($key in @("CONCURRENCY", "BQ_BATCH_SIZE", "MAX_PAGES")) {
+foreach ($key in @("CONCURRENCY", "BQ_BATCH_SIZE", "MAX_PAGES", "SYNC_SINCE", "FUNCTION_SECRET")) {
     if ($envVars[$key]) { $vars[$key] = $envVars[$key] }
+}
+
+if (-not $vars["FUNCTION_SECRET"]) {
+    Write-Warning "FUNCTION_SECRET ist nicht gesetzt. Die Function waere dann ohne Secret-Schutz erreichbar."
 }
 
 # ── --set-env-vars String bauen ───────────────────────────────────────────────
@@ -46,12 +50,12 @@ Write-Host ""
 # ── gcloud deploy ─────────────────────────────────────────────────────────────
 gcloud functions deploy notion-to-bq `
     --gen2 `
-    --runtime=nodejs20 `
+    --runtime=nodejs22 `
     --region=europe-west3 `
     --source=. `
     --entry-point=notionToBq `
     --trigger-http `
-    --no-allow-unauthenticated `
+    --allow-unauthenticated `
     --timeout=540s `
     --memory=512MB `
     --set-env-vars="$setEnvVars"
