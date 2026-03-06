@@ -1,6 +1,7 @@
 'use strict';
 // ─────────────────────────────────────────────────────────────────────────────
 // notion-to-bq.js
+//SYNC_SINCE=all MAX_PAGES=5 node notion-to-bq.js --recreate
 // Liest ALLE Seiten aus einer Notion-Datenbank, löst alle Relationen auf
 // und überträgt die Daten 1:1 in eine BigQuery-Tabelle.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -20,6 +21,7 @@ const BQ_LOCATION   = process.env.BQ_LOCATION || 'EU';
 const MAX_PAGES     = parseInt(process.env.MAX_PAGES     || '0',   10); // 0 = alle
 const SYNC_SINCE    = process.env.SYNC_SINCE || 'today';             // 'today', 'yesterday', oder ISO-String
 const FUNCTION_SECRET = (process.env.FUNCTION_SECRET || '').trim();
+const RECREATE_TABLE  = process.argv.includes('--recreate');
 
 if (!DATABASE_ID || !BQ_PROJECT_ID || !BQ_DATASET) {
   console.error('Fehlende Pflicht-Variablen: NOTION_DATA_SOURCE_ID, BQ_PROJECT_ID, BQ_DATASET');
@@ -76,7 +78,8 @@ function richText(arr) {
 }
 
 // ─── Seiten-Titel-Cache ───────────────────────────────────────────────────────
-const titleCache = new Map();
+const titleCache      = new Map(); // page_id → title (Rückwärtskompatibilität)
+const pageDetailsCache = new Map(); // page_id → { title, urheberart }
 
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
@@ -131,24 +134,43 @@ function isAuthorizedRequest(req) {
   return getProvidedSecret(req) === FUNCTION_SECRET;
 }
 
-async function resolveTitle(pageId) {
-  if (titleCache.has(pageId)) return titleCache.get(pageId);
+async function resolvePage(pageId) {
+  if (pageDetailsCache.has(pageId)) return pageDetailsCache.get(pageId);
   for (let attempt = 1; attempt <= 5; attempt++) {
     try {
-      const page = await notion.pages.retrieve({ page_id: pageId });
-      const prop  = Object.values(page.properties).find((p) => p.type === 'title');
-      const title = richText(prop?.title) || pageId;
+      const page       = await notion.pages.retrieve({ page_id: pageId });
+      const titleProp  = Object.values(page.properties).find((p) => p.type === 'title');
+      const title      = richText(titleProp?.title) || pageId;
+      // Urheberart ist eine Relation → ersten verlinkten Seiten-Titel auflösen
+      let urheberart = null;
+      const urheberartRel = page.properties['Urheberart']?.relation ?? [];
+      if (urheberartRel.length > 0) {
+        try {
+          const uPage = await notion.pages.retrieve({ page_id: urheberartRel[0].id });
+          const uTitleProp = Object.values(uPage.properties).find((p) => p.type === 'title');
+          urheberart = richText(uTitleProp?.title) || null;
+        } catch (_) { /* ignorieren */ }
+      }
+      const details    = { title, urheberart };
+      pageDetailsCache.set(pageId, details);
       titleCache.set(pageId, title);
-      return title;
+      return details;
     } catch (err) {
       if (err.code === 'rate_limited' && attempt < 5) {
-        await sleep(attempt * 3000); // 3s, 6s, 9s, 12s
+        await sleep(attempt * 3000);
         continue;
       }
+      const fallback = { title: pageId, urheberart: null };
+      pageDetailsCache.set(pageId, fallback);
       titleCache.set(pageId, pageId);
-      return pageId;
+      return fallback;
     }
   }
+}
+
+async function resolveTitle(pageId) {
+  const details = await resolvePage(pageId);
+  return details.title;
 }
 
 // ─── Relation mit Pagination (has_more) ──────────────────────────────────────
@@ -240,10 +262,14 @@ async function propValue(pageId, propId, prop) {
         items = full.map((r) => r?.relation ?? r).filter((r) => r?.id);
       }
       if (items.length === 0) return [];
-      return items.map((r) => ({
-        page_id: r.id,
-        title:   titleCache.get(r.id) ?? r.id,
-      }));
+      return items.map((r) => {
+        const det = pageDetailsCache.get(r.id);
+        return {
+          page_id:    r.id,
+          title:      det?.title      ?? titleCache.get(r.id) ?? r.id,
+          urheberart: det?.urheberart ?? null,
+        };
+      });
     }
 
     case 'rollup': {
@@ -319,8 +345,9 @@ function notionPropToBqField(propName, prop) {
       return {
         name, type: 'RECORD', mode: 'REPEATED',
         fields: [
-          { name: 'page_id', type: 'STRING', mode: 'NULLABLE' },
-          { name: 'title',   type: 'STRING', mode: 'NULLABLE' },
+          { name: 'page_id',    type: 'STRING', mode: 'NULLABLE' },
+          { name: 'title',      type: 'STRING', mode: 'NULLABLE' },
+          { name: 'urheberart', type: 'STRING', mode: 'NULLABLE' },
         ],
       };
 
@@ -502,6 +529,27 @@ async function preloadTitles(ids) {
 }
 
 
+// ─── Schema-Merge: Subfelder in bestehende RECORD-Spalten einfügen ───────────
+function mergeRecordSubfields(existingFields, desiredFields) {
+  const byName = {};
+  for (const f of existingFields) byName[f.name] = f;
+  let changed = false;
+  for (const desired of desiredFields) {
+    if (!byName[desired.name]) {
+      existingFields.push(desired);
+      changed = true;
+    } else if (
+      desired.type === 'RECORD' &&
+      byName[desired.name].type === 'RECORD' &&
+      Array.isArray(desired.fields)
+    ) {
+      byName[desired.name].fields = byName[desired.name].fields || [];
+      if (mergeRecordSubfields(byName[desired.name].fields, desired.fields)) changed = true;
+    }
+  }
+  return changed;
+}
+
 // ─── BigQuery: Tabelle sicherstellen ─────────────────────────────────────────
 async function ensureTable(tableName, schema) {
   const ds = bigquery.dataset(BQ_DATASET);
@@ -522,15 +570,44 @@ async function ensureTable(tableName, schema) {
     console.log(`  → Tabelle erstellt.`);
   } else {
     const [meta] = await tbl.getMetadata();
-    const existing = new Set((meta.schema?.fields ?? []).map((f) => f.name));
-    const newFields = schema.filter((f) => !existing.has(f.name));
+    meta.schema = meta.schema || { fields: [] };
+    meta.schema.fields = meta.schema.fields || [];
 
-    if (newFields.length > 0) {
-      meta.schema = meta.schema || { fields: [] };
-      meta.schema.fields = meta.schema.fields || [];
-      meta.schema.fields.push(...newFields);
+    // Prüfe ob Typ-Konflikte vorliegen (z.B. STRING → RECORD nicht in-place möglich)
+    const conflicts = schema.filter(desired => {
+      const existing = meta.schema.fields.find(f => f.name === desired.name);
+      return existing && existing.type !== desired.type;
+    });
+
+    if (conflicts.length > 0) {
+      if (RECREATE_TABLE) {
+        console.log(`  → ${conflicts.length} Typ-Konflikte gefunden (${conflicts.map(f=>f.name).join(', ')}).`);
+        console.log(`  → Tabelle "${BQ_DATASET}.${tableName}" wird gelöscht und neu erstellt...`);
+        await tbl.delete();
+        // Kurz warten bis Löschung propagiert
+        await new Promise(r => setTimeout(r, 3000));
+        await ds.table(tableName).create({
+          schema,
+          timePartitioning: { type: 'DAY', field: '_synced_at' },
+        });
+        console.log(`  → Tabelle neu erstellt.`);
+        return ds.table(tableName);
+      } else {
+        console.error(`\n  ✗ Schema-Konflikt: ${conflicts.length} Felder haben inkompatible Typen:`);
+        conflicts.forEach(f => {
+          const ex = meta.schema.fields.find(e => e.name === f.name);
+          console.error(`    "${f.name}": BQ=${ex.type} → gewünscht=${f.type}`);
+        });
+        console.error('\n  → Tabelle mit --recreate neu erstellen: node notion-to-bq.js --recreate');
+        console.error('     ACHTUNG: Alle vorhandenen Daten gehen verloren. Danach SYNC_SINCE=all setzen.');
+        process.exit(1);
+      }
+    }
+
+    const changed = mergeRecordSubfields(meta.schema.fields, schema);
+    if (changed) {
       await tbl.setMetadata(meta);
-      console.log(`  → Tabelle erweitert um ${newFields.length} Spalte(n).`);
+      console.log(`  → Tabelle "${BQ_DATASET}.${tableName}" Schema aktualisiert (inkl. Subfelder).`);
     } else {
       console.log(`  → Tabelle "${BQ_DATASET}.${tableName}" existiert bereits. Schema unverändert.`);
     }

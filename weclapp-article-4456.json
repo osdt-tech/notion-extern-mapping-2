@@ -1,0 +1,187 @@
+{
+  "id": "4456",
+  "version": "35",
+  "active": true,
+  "applyCashDiscount": true,
+  "articleAlternativeQuantities": [],
+  "articleCalculationPrices": [],
+  "articleGrossWeight": "0.254",
+  "articleImages": [
+    {
+      "id": "97821",
+      "version": "0",
+      "createdDate": 1761311454761,
+      "fileName": "VM_Piper_GrosseFreude-Produkt01.png",
+      "lastModifiedDate": 1761311454760,
+      "mainImage": true
+    },
+    {
+      "id": "97822",
+      "version": "0",
+      "createdDate": 1761311454762,
+      "fileName": "VM_Piper_GrosseFreude-Produkt02.png",
+      "lastModifiedDate": 1761311454761,
+      "mainImage": false
+    },
+    {
+      "id": "97823",
+      "version": "0",
+      "createdDate": 1761311454763,
+      "fileName": "VM_Piper_GrosseFreude-Produkt03.png",
+      "lastModifiedDate": 1761311454762,
+      "mainImage": false
+    },
+    {
+      "id": "97824",
+      "version": "0",
+      "createdDate": 1761311454763,
+      "fileName": "VM_Piper_GrosseFreude-Produkt04.png",
+      "lastModifiedDate": 1761311454763,
+      "mainImage": false
+    },
+    {
+      "id": "97825",
+      "version": "0",
+      "createdDate": 1761311454764,
+      "fileName": "VM_Piper_GrosseFreude-Produkt05.png",
+      "lastModifiedDate": 1761311454764,
+      "mainImage": false
+    }
+  ],
+  "articleNumber": "8652000",
+  "articlePrices": [
+    {
+      "id": "4463",
+      "version": "0",
+      "createdDate": 1761291830888,
+      "currencyId": "256",
+      "lastModifiedByUserId": "4174",
+      "lastModifiedDate": 1761291830887,
+      "price": "12.9",
+      "priceScaleType": "SCALE_FROM",
+      "priceScaleValue": "0",
+      "reductionAdditions": [],
+      "salesChannel": "GROSS1",
+      "startDate": 1761256800000,
+      "currencyIdResolved": "EUR",
+      "lastModifiedByUserIdResolved": "Service Navaya"
+    }
+  ],
+  "articleType": "STORABLE",
+  "availableForSalesChannels": [],
+  "availableInSale": true,
+  "batchNumberRequired": false,
+  "billOfMaterialPartDeliveryPossible": false,
+  "commissionRate": "100",
+  "createdDate": 1761291830880,
+  "customAttributes": [
+    {
+      "attributeDefinitionId": "7508",
+      "stringValue": "01.11.2021",
+      "attributeDefinitionIdResolved": "Veröffentlichungsdatum"
+    },
+    {
+      "attributeDefinitionId": "8423",
+      "attributeDefinitionIdResolved": "Altersgruppe"
+    },
+    {
+      "attributeDefinitionId": "93216",
+      "selectedValues": [
+        {
+          "id": "97256",
+          "idResolved": "gid://shopify/Metaobject/1933869323"
+        }
+      ],
+      "attributeDefinitionIdResolved": "Autor"
+    },
+    {
+      "attributeDefinitionId": "106832",
+      "attributeDefinitionIdResolved": "Serie"
+    },
+    {
+      "attributeDefinitionId": "91477",
+      "numberValue": "2",
+      "attributeDefinitionIdResolved": "Auflage-Nr."
+    },
+    {
+      "attributeDefinitionId": "95636",
+      "attributeDefinitionIdResolved": "Link: Print-Version"
+    },
+    {
+      "attributeDefinitionId": "135775",
+      "numberValue": "128",
+      "attributeDefinitionIdResolved": "Seitenzahl"
+    },
+    {
+      "attributeDefinitionId": "4307",
+      "booleanValue": true,
+      "attributeDefinitionIdResolved": "Im Shop verfügbar (verbum-medien)"
+    },
+    {
+      "attributeDefinitionId": "4309",
+      "booleanValue": true,
+      "attributeDefinitionIdResolved": "Im Shop aktiv (verbum-medien)"
+    },
+    {
+      "attributeDefinitionId": "4311",
+      "booleanValue": true,
+      "attributeDefinitionIdResolved": "Bestand übertragen (verbum-medien)"
+    },
+    {
+      "attributeDefinitionId": "4313",
+      "stringValue": "gid://shopify/Product/7079717273749",
+      "attributeDefinitionIdResolved": "Artikelbeschreibung (verbum-medien)"
+    },
+    {
+      "attributeDefinitionId": "4317",
+      "stringValue": "GRAM",
+      "attributeDefinitionIdResolved": "Gewichtseinheit"
+    },
+    {
+      "attributeDefinitionId": "4319",
+      "stringValue": "gid://shopify/Product/7079717273749",
+      "attributeDefinitionIdResolved": "Produkt-ID (verbum-medien)"
+    },
+    {
+      "attributeDefinitionId": "4321",
+      "stringValue": "gid://shopify/ProductVariant/41567163089045",
+      "attributeDefinitionIdResolved": "Varianten-ID (verbum-medien)"
+    }
+  ],
+  "customerArticleNumbers": [],
+  "customsTariffNumberId": "95245",
+  "defaultPriceCalculationType": "PURCHASE",
+  "defaultStoragePlaces": [],
+  "defineIndividualTaskTemplates": false,
+  "ean": "9783986650001",
+  "lastModifiedDate": 1772630934313,
+  "launchDate": 1635721200000,
+  "longText": "Der Advent ist eine Zeit der Vorbereitung auf das Weihnachtsfest, an dem wir die Menschwerdung Jesu feiern. Es ist das größte Wunder der Menschheitsgeschichte: der ewige Gott wird Mensch. Dieses Wunder ist zu großartig, um es nur in den kurzen Weihnachtstagen zu feiern. Die Adventszeit bietet eine Möglichkeit, die Freude über das Weihnachtswunder auszuweiten..<br>Die 25 Andachten von John Piper beginnen am 1. Dezember und führen bis zum ersten Weihnachtstag. Dieses Andachtsbuch will dir helfen, Jesus im Zentrum und als größten Schatz der Adventszeit zu bewahren. Die Kerzen und Süßigkeiten haben ihren Platz, aber du solltest sicherstellen, dass in all der Hektik und dem Trubel Jesus über alles verherrlicht wird.",
+  "lowLevelCode": 0,
+  "manufacturerId": "4442",
+  "marginCalculationPriceType": "PURCHASE_PRICE_PRODUCTION_COST",
+  "name": "Große Freude",
+  "packagingUnitBaseArticleId": "4456",
+  "productionArticle": false,
+  "productionBillOfMaterialItems": [],
+  "productionConfigurationRule": "ALL_COMPONENTS",
+  "quantityConversions": [],
+  "salesBillOfMaterialItems": [],
+  "serialNumberRequired": false,
+  "shortDescription1": "Andachten, Advent / Weihnachten, Stille Zeit",
+  "shortDescription2": "test",
+  "showOnDeliveryNote": true,
+  "supplySources": [],
+  "systemCode": "49019900",
+  "tags": [],
+  "taxRateType": "REDUCED",
+  "unitId": "3527",
+  "useAvailableForSalesChannels": false,
+  "useSalesBillOfMaterialItemPrices": false,
+  "useSalesBillOfMaterialItemPricesForPurchase": false,
+  "useSalesBillOfMaterialSubitemCosts": false,
+  "customsTariffNumberIdResolved": "1 49019900",
+  "manufacturerIdResolved": "John Piper",
+  "packagingUnitBaseArticleIdResolved": "8652000 Große Freude",
+  "unitIdResolved": "Stk."
+}

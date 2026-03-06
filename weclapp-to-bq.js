@@ -15,11 +15,12 @@ const WECLAPP_API_KEY  = process.env.WECLAPP_API_KEY;
 const WECLAPP_BASE_URL = (process.env.WECLAPP_BASE_URL || '').replace(/\/$/, '');
 const PAGE_SIZE        = parseInt(process.env.WECLAPP_PAGE_SIZE || '100', 10);
 
-const BQ_PROJECT_ID = process.env.BQ_PROJECT_ID;
-const BQ_DATASET    = process.env.BQ_DATASET;
-const BQ_TABLE      = process.env.WECLAPP_BQ_TABLE || 'weclapp_artikel';
-const BQ_LOCATION   = process.env.BQ_LOCATION      || 'EU';
-const BQ_BATCH_SIZE = parseInt(process.env.BQ_BATCH_SIZE || '500', 10);
+const BQ_PROJECT_ID  = process.env.BQ_PROJECT_ID;
+const BQ_DATASET     = 'datenvergleich'; //process.env.BQ_DATASET;
+const BQ_TABLE       = process.env.WECLAPP_BQ_TABLE || 'weclapp_artikel';
+const BQ_LOCATION    = process.env.BQ_LOCATION      || 'EU';
+const BQ_BATCH_SIZE  = parseInt(process.env.BQ_BATCH_SIZE || '500', 10);
+const RECREATE_TABLE = process.argv.includes('--recreate');
 
 if (!WECLAPP_API_KEY)  { console.error('Fehlende Variable: WECLAPP_API_KEY');  process.exit(1); }
 if (!WECLAPP_BASE_URL) { console.error('Fehlende Variable: WECLAPP_BASE_URL'); process.exit(1); }
@@ -27,6 +28,13 @@ if (!BQ_PROJECT_ID)    { console.error('Fehlende Variable: BQ_PROJECT_ID');    p
 if (!BQ_DATASET)       { console.error('Fehlende Variable: BQ_DATASET');       process.exit(1); }
 
 const bigquery = new BigQuery({ projectId: BQ_PROJECT_ID });
+
+// ─── Bekannte ID-Felder die per Referenztabelle aufgelöst werden ──────────────
+const ID_FIELDS_TO_RESOLVE = [
+  { idField: 'manufacturerId',        nameCol: 'manufacturer_name',          endpoint: '/manufacturer',        nameKey: 'name'         },
+  { idField: 'unitId',                nameCol: 'unit_name',                  endpoint: '/unit',                nameKey: 'name'         },
+  { idField: 'customsTariffNumberId', nameCol: 'customs_tariff_number_name', endpoint: '/customsTariffNumber', nameKey: 'tariffNumber' },
+];
 
 // ─── HTTPS-Hilfsfunktion ─────────────────────────────────────────────────────
 function weclappGet(path) {
@@ -64,6 +72,29 @@ function weclappGet(path) {
   });
 }
 
+// ─── Referenztabelle laden (id → name) ───────────────────────────────────────
+async function fetchRefMap(endpoint, nameKey) {
+  const map = {};
+  let page = 1;
+  while (true) {
+    let data;
+    try {
+      data = await weclappGet(`${endpoint}?page=${page}&pageSize=100&serializeNulls=false`);
+    } catch (err) {
+      console.warn(`  Warnung: ${endpoint} nicht verfügbar – ${err.message}`);
+      break;
+    }
+    const items = Array.isArray(data.result) ? data.result : [];
+    if (items.length === 0) break;
+    for (const item of items) {
+      if (item.id != null) map[String(item.id)] = item[nameKey] ?? null;
+    }
+    if (items.length < 100) break;
+    page++;
+  }
+  return map;
+}
+
 // ─── Schema-Hilfsfunktionen ───────────────────────────────────────────────────
 
 /** Spaltenname BigQuery-kompatibel machen */
@@ -97,12 +128,24 @@ function mergeType(a, b) {
   return 'STRING';
 }
 
+/**
+ * Spaltenname ableiten:
+ * - "manufacturerIdResolved" → "manufacturer_name"
+ * - alle anderen            → sanitize(key)
+ */
+function resolveColumnName(key) {
+  if (key.endsWith('IdResolved')) {
+    return sanitize(key.replace(/IdResolved$/, '')) + '_name';
+  }
+  return sanitize(key);
+}
+
 /** Scannt alle Datensätze → { feldname → BQ-Typ } */
 function scanSchema(records) {
   const types = {};
   for (const rec of records) {
     for (const [key, value] of Object.entries(rec)) {
-      const col = sanitize(key);
+      const col = resolveColumnName(key);
       const t   = inferType(value);
       types[col] = mergeType(types[col] ?? null, t);
     }
@@ -120,18 +163,28 @@ function buildSchema(typeMap) {
     if (col === 'id') continue; // wird als weclapp_id gesondert behandelt
     fields.push({ name: col, type: bqType || 'STRING', mode: 'NULLABLE' });
   }
+  // Immer _name-Spalten für bekannte ID-Felder ergänzen (unabhängig vom API-Response)
+  const existingCols = new Set(fields.map((f) => f.name));
+  for (const { nameCol } of ID_FIELDS_TO_RESOLVE) {
+    if (!existingCols.has(nameCol)) {
+      fields.push({ name: nameCol, type: 'STRING', mode: 'NULLABLE' });
+    }
+  }
+  if (!existingCols.has('packaging_unit_base_article_name')) {
+    fields.push({ name: 'packaging_unit_base_article_name', type: 'STRING', mode: 'NULLABLE' });
+  }
   return fields;
 }
 
 /** Konvertiert einen weclapp-Artikel in eine BQ-Zeile */
-function toRow(record, syncedAt) {
+function toRow(record, syncedAt, refMaps) {
   const row = {
     weclapp_id: String(record.id ?? ''),
     _synced_at: syncedAt,
   };
   for (const [key, value] of Object.entries(record)) {
     if (key === 'id') continue;
-    const col = sanitize(key);
+    const col = resolveColumnName(key);
     if (!col) continue;
     if (value === null || value === undefined) {
       row[col] = null;
@@ -140,6 +193,22 @@ function toRow(record, syncedAt) {
     } else {
       row[col] = value;
     }
+  }
+  // Bekannte ID-Felder via Referenztabelle auflösen (falls nicht schon aus *IdResolved gesetzt)
+  for (const { idField, nameCol, endpoint } of ID_FIELDS_TO_RESOLVE) {
+    if (row[nameCol] == null) {
+      const id = record[idField];
+      row[nameCol] = (id != null && refMaps[endpoint])
+        ? (refMaps[endpoint][String(id)] ?? null)
+        : null;
+    }
+  }
+  // packagingUnitBaseArticleId → Artikelnummer + Name
+  if (row['packaging_unit_base_article_name'] == null) {
+    const id = record.packagingUnitBaseArticleId;
+    row['packaging_unit_base_article_name'] = (id != null && refMaps['__articles__'])
+      ? (refMaps['__articles__'][String(id)] ?? null)
+      : null;
   }
   return row;
 }
@@ -185,7 +254,7 @@ async function fetchAllArticles() {
 }
 
 // ─── BigQuery: Tabelle anlegen / Schema erweitern ─────────────────────────────
-async function ensureTable(schema) {
+async function ensureTable(schema, recreate = false) {
   const dataset = bigquery.dataset(BQ_DATASET, { location: BQ_LOCATION });
 
   const [dsExists] = await dataset.exists();
@@ -197,13 +266,27 @@ async function ensureTable(schema) {
   const table = dataset.table(BQ_TABLE);
   const [tblExists] = await table.exists();
 
-  if (!tblExists) {
+  if (tblExists && recreate) {
+    console.log(`  --recreate: Tabelle "${BQ_TABLE}" wird gelöscht…`);
+    await table.delete();
+    console.log(`  Tabelle gelöscht.`);
+  }
+
+  if (!tblExists || recreate) {
     console.log(`  Tabelle "${BQ_TABLE}" wird neu angelegt…`);
     await table.create({
       schema: { fields: schema },
       timePartitioning: { type: 'DAY', field: '_synced_at' },
     });
-    console.log(`  Tabelle angelegt.`);
+    console.log(`  Tabelle angelegt. Warte auf BQ-Propagierung…`);
+    // Aktiv pollen bis Tabelle verfügbar (max. 120 s)
+    for (let i = 0; i < 24; i++) {
+      await new Promise((r) => setTimeout(r, 5000));
+      const [ready] = await table.exists();
+      if (ready) { console.log(`  Tabelle bereit (nach ${(i + 1) * 5} s).`); break; }
+      process.stdout.write(`\r  Noch nicht bereit… ${(i + 1) * 5} s`);
+    }
+    process.stdout.write('\n');
     return;
   }
 
@@ -244,10 +327,11 @@ async function insertRows(rows) {
     console.log(`  Projekt : ${BQ_PROJECT_ID}`);
     console.log(`  Dataset : ${BQ_DATASET}`);
     console.log(`  Tabelle : ${BQ_TABLE}`);
+    if (RECREATE_TABLE) console.log('  Modus   : --recreate (Tabelle wird neu angelegt)');
     console.log('═══════════════════════════════════════════');
 
     // 1. Alle Artikel von weclapp laden
-    console.log('\n[1/3] weclapp-Artikel abrufen…');
+    console.log('\n[1/4] weclapp-Artikel abrufen…');
     const articles = await fetchAllArticles();
     console.log(`  ${articles.length} Artikel geladen.`);
 
@@ -256,17 +340,31 @@ async function insertRows(rows) {
       return;
     }
 
-    // 2. Schema dynamisch ermitteln
-    console.log('\n[2/3] Schema ermitteln…');
+    // 2. Referenztabellen laden
+    console.log('\n[2/4] Referenzdaten laden…');
+    const refMaps = {};
+    for (const { endpoint, nameKey } of ID_FIELDS_TO_RESOLVE) {
+      refMaps[endpoint] = await fetchRefMap(endpoint, nameKey);
+      console.log(`  ${endpoint}: ${Object.keys(refMaps[endpoint]).length} Einträge`);
+    }
+    // Artikel-Lookup für packagingUnitBaseArticleId
+    const articleLookup = {};
+    for (const a of articles) {
+      articleLookup[String(a.id)] = [a.articleNumber, a.name].filter(Boolean).join(' ');
+    }
+    refMaps['__articles__'] = articleLookup;
+
+    // 3. Schema dynamisch ermitteln
+    console.log('\n[3/4] Schema ermitteln…');
     const typeMap = scanSchema(articles);
     const schema  = buildSchema(typeMap);
     console.log(`  ${schema.length} Spalten erkannt.`);
-    await ensureTable(schema);
+    await ensureTable(schema, RECREATE_TABLE);
 
-    // 3. Daten einfügen
-    console.log('\n[3/3] Daten in BigQuery einfügen…');
+    // 4. Daten einfügen
+    console.log('\n[4/4] Daten in BigQuery einfügen…');
     const syncedAt = new Date().toISOString();
-    const rows = articles.map((a) => toRow(a, syncedAt));
+    const rows = articles.map((a) => toRow(a, syncedAt, refMaps));
     await insertRows(rows);
 
     console.log('\n✓ Fertig.');

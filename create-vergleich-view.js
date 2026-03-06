@@ -12,7 +12,7 @@ const { BigQuery } = require('@google-cloud/bigquery');
 
 // ─── Globale Parameter ────────────────────────────────────────────────────────
 const PROJECT    = process.env.BQ_PROJECT_ID  || 'reporting-470420';
-const DATASET    = process.env.BQ_DATASET     || 'datenvergleich';
+const DATASET    = 'datenvergleich'     || 'datenvergleich';
 const VIEW_NAME  = process.env.VERGLEICH_VIEW || 'view';
 const LOCATION   = process.env.BQ_LOCATION    || 'EU';
 
@@ -71,6 +71,9 @@ const SOURCES = [
       { verbumField: 'titel', externField: 'name', feldname: 'titel' },
       { verbumField: 'bestell_nr', externField: 'articlenumber', feldname: 'bestell_nr' },
        { verbumField: 'zolltarifnummer', externField: 'systemcode', feldname: 'Zolltarifnummer' },
+        { verbumField: 'mitwirkende',
+          verbumExpr: `(SELECT STRING_AGG(m.title, '; ') FROM UNNEST(t1.mitwirkende) AS m WHERE m.urheberart = 'Autor')`,
+          externField: 'manufacturer_name', feldname: 'Autor' },
     ],
   },
 ];
@@ -87,7 +90,7 @@ function asStr(expr) {
 /** Baut einen einzelnen SELECT-Block für eine Quelle + ein Feld */
 function buildBlock(source, field) {
   const m  = MASTER;
-  const vb = `${m.alias}.${field.verbumField}`;
+  const vb = field.verbumExpr ?? `${m.alias}.${field.verbumField}`;
   const ex = `${source.alias}.${field.externField}`;
 
   // Beide Seiten deduplizieren – verhindert Zeilen-Multiplikation durch Duplikate
@@ -121,10 +124,10 @@ LEFT JOIN
 }
 
 /** Baut die gesamte View-SQL aus allen Quellen und Feldern */
-function buildViewSQL() {
+function buildViewSQL(sources = SOURCES) {
   const blocks = [];
 
-  for (const source of SOURCES) {
+  for (const source of sources) {
     for (const field of source.fields) {
       blocks.push(buildBlock(source, field));
     }
@@ -138,7 +141,24 @@ function buildViewSQL() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function createOrReplaceView() {
-  const sql = buildViewSQL();
+  // Nur Quellen einbeziehen deren Tabelle auch in BQ existiert
+  const dataset = bigquery.dataset(DATASET);
+  const availableSources = [];
+  for (const source of SOURCES) {
+    const [exists] = await dataset.table(source.tableId).exists();
+    if (exists) {
+      availableSources.push(source);
+    } else {
+      console.warn(`  ⚠ Tabelle "${source.tableId}" nicht gefunden – Quelle "${source.name}" wird übersprungen.`);
+    }
+  }
+
+  if (availableSources.length === 0) {
+    console.error('Keine Quell-Tabellen vorhanden – View wird nicht erstellt.');
+    process.exit(1);
+  }
+
+  const sql = buildViewSQL(availableSources);
 
   console.log('──────────────────────────────────────────────────');
   console.log(`View: ${PROJECT}.${DATASET}.${VIEW_NAME}`);
