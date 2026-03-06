@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Notion ↔ Shopify ↔ Weclapp Vergleich</title>
+<style>
+  :root {
+    --bg: #0f1117; --surface: #1a1d27; --border: #2a2d3e;
+    --green: #22c55e; --yellow: #f59e0b; --red: #ef4444; --blue: #3b82f6;
+    --text: #e2e8f0; --dim: #64748b; --accent: #6366f1;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font: 14px/1.5 'Inter', system-ui, sans-serif; min-height: 100vh; }
+  header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 16px 24px; display: flex; align-items: center; gap: 16px; position: sticky; top: 0; z-index: 10; }
+  header h1 { font-size: 16px; font-weight: 600; color: var(--text); white-space: nowrap; }
+  header h1 span { color: var(--accent); }
+  .controls { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; flex: 1; }
+  .controls label { font-size: 12px; color: var(--dim); }
+  .controls input[type=number] { width: 70px; background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 5px 8px; border-radius: 6px; font-size: 13px; }
+  .controls select { background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 5px 8px; border-radius: 6px; font-size: 13px; cursor: pointer; }
+  .controls input[type=checkbox] { accent-color: var(--accent); width: 14px; height: 14px; cursor: pointer; }
+  button.run { background: var(--accent); color: #fff; border: none; padding: 7px 18px; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; transition: opacity .15s; white-space: nowrap; }
+  button.run:hover { opacity: .85; }
+  button.run:disabled { opacity: .4; cursor: not-allowed; }
+  #status-bar { padding: 8px 24px; font-size: 12px; color: var(--dim); background: var(--surface); border-bottom: 1px solid var(--border); min-height: 32px; }
+  #stats-bar { display: none; padding: 10px 24px; background: var(--surface); border-bottom: 1px solid var(--border); gap: 20px; flex-wrap: wrap; }
+  #stats-bar.visible { display: flex; }
+  .stat { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+  .stat .val { font-weight: 700; font-size: 15px; }
+  .stat.green .val { color: var(--green); }
+  .stat.yellow .val { color: var(--yellow); }
+  .stat.red .val { color: var(--red); }
+  .stat.dim .val { color: var(--dim); }
+  #results { padding: 20px 24px; display: flex; flex-direction: column; gap: 14px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; transition: border-color .2s; }
+  .card.has-diff { border-color: #f59e0b44; }
+  .card.has-error { border-color: #ef444444; }
+  .card-header { padding: 12px 16px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--border); cursor: pointer; user-select: none; }
+  .card-header:hover { background: #ffffff08; }
+  .card-title { font-weight: 600; font-size: 14px; flex: 1; }
+  .card-ids { display: flex; gap: 8px; flex-wrap: wrap; }
+  .badge { font-size: 11px; padding: 2px 8px; border-radius: 99px; background: var(--border); color: var(--dim); }
+  .badge.shopify { background: #16a34a22; color: #4ade80; }
+  .badge.weclapp { background: #1d4ed822; color: #60a5fa; }
+  .badge.vlb     { background: #d9770622; color: #fb923c; }
+  .badge.notion   { background: #0891b222; color: #22d3ee; }
+  a.badge { text-decoration: none; transition: opacity .15s, box-shadow .15s; }
+  a.badge:hover { opacity: .85; box-shadow: 0 0 0 2px #ffffff22; }
+  .chevron { color: var(--dim); transition: transform .2s; font-size: 12px; }
+  .card.collapsed .chevron { transform: rotate(-90deg); }
+  .card.collapsed .card-body { display: none; }
+  .status-ok { color: var(--green); font-size: 13px; padding: 10px 16px; }
+  table { width: 100%; border-collapse: collapse; }
+  th { font-size: 11px; font-weight: 600; color: var(--dim); text-transform: uppercase; letter-spacing: .05em; padding: 6px 12px; text-align: left; border-bottom: 1px solid var(--border); }
+  td { padding: 7px 12px; font-size: 13px; border-bottom: 1px solid #ffffff08; vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  tr.equal td { color: #94a3b8; }
+  tr.equal td:first-child { color: var(--green); }
+  tr.equal td:nth-child(2) { color: #cbd5e1; }
+  tr.equal .val-cell { color: #94a3b8; }
+  tr.diff td { color: var(--text); font-weight: 500; }
+  tr.diff td:first-child  { color: var(--yellow); }
+  tr.diff td:nth-child(2) { color: var(--yellow); font-weight: 600; }
+  tr.missing td { color: var(--text); font-weight: 500; }
+  tr.missing td:first-child { color: var(--red); }
+  tr.missing td:nth-child(2) { color: var(--red); font-weight: 600; }
+  tr.diff   { background: #f59e0b0f; }
+  tr.missing { background: #ef44440f; }
+  tr.notion_only td { color: #64748b; }
+  tr.notion_only td:first-child { color: #64748b; }
+  tr.notion_only td:nth-child(2) { color: #94a3b8; }
+  tr.notion_only { background: #64748b08; }
+  .icon { font-size: 14px; }
+  .val-cell { font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 12px; }
+  .ext-badge { font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 4px; margin-right: 6px; }
+  .ext-badge.shopify { background: #16a34a22; color: #4ade80; }
+  .ext-badge.weclapp  { background: #1d4ed822; color: #60a5fa; }
+  .ext-badge.vlb      { background: #d9770622; color: #fb923c; }
+  .ext-badge.unlinked { background: #64748b18; color: #64748b; border: 1px dashed #64748b44; }
+  .update-cell { width: 52px; text-align: center; }
+  .btn-update { background: #6366f122; border: 1px solid #6366f166; color: #a5b4fc; padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: 700; cursor: pointer; transition: background .15s, color .15s, border-color .15s, box-shadow .15s; white-space: nowrap; letter-spacing: .02em; }
+  tr.diff   .btn-update { background: #f59e0b22; border-color: #f59e0b88; color: #fcd34d; }
+  tr.missing .btn-update { background: #ef444422; border-color: #ef444488; color: #fca5a5; }
+  .btn-update:hover:not(:disabled) { background: var(--accent); color: #fff; border-color: var(--accent); box-shadow: 0 0 0 2px #6366f144; }
+  tr.diff .btn-update:hover:not(:disabled)    { background: #f59e0b; color: #000; border-color: #f59e0b; box-shadow: 0 0 0 2px #f59e0b33; }
+  tr.missing .btn-update:hover:not(:disabled) { background: #ef4444; color: #fff; border-color: #ef4444; box-shadow: 0 0 0 2px #ef444433; }
+  .btn-update:disabled { opacity: .5; cursor: not-allowed; }
+  .btn-update.success { background: #22c55e22; color: var(--green); border-color: var(--green); }
+  .btn-update.error   { background: #ef444422; color: var(--red);   border-color: var(--red); }
+  .err-row { color: var(--red); font-size: 12px; padding: 6px 12px; }
+  .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .6s linear infinite; vertical-align: middle; margin-right: 6px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #empty { display: none; text-align: center; padding: 60px 24px; color: var(--dim); font-size: 15px; }
+  #empty.visible { display: block; }
+  .hint { font-size: 11px; color: var(--dim); padding: 0 24px 6px; }
+  .btn-refresh { background: #6366f1; border: none; color: #fff; padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: 700; cursor: pointer; transition: background .15s, box-shadow .15s, opacity .15s; line-height: 1.5; letter-spacing: .02em; white-space: nowrap; }
+  .btn-refresh:hover:not(:disabled) { background: #818cf8; box-shadow: 0 0 0 3px #6366f155; }
+  .btn-refresh:disabled { opacity: .45; cursor: not-allowed; }
+  .btn-refresh.success { background: #16a34a; }
+  .btn-refresh.error   { background: #dc2626; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Notion <span>↔</span> Shopify <span>↔</span> Weclapp <span style="font-size:11px;color:var(--dim);font-weight:400;margin-left:6px"><?= appVersion ?></span></h1>
+  <div class="controls">
+    <label id="lbl-limit">Limit <input type="number" id="c-limit" value="10" min="1" max="500"></label>
+    <label style="display:flex;align-items:center;gap:5px">
+      <input type="checkbox" id="c-all" checked onchange="toggleAll(this)"> Alle
+    </label>
+    <label>Schnittstelle
+      <select id="c-only">
+        <option value="" selected>VLB + Shopify + Weclapp</option>
+        <option value="vlb">Nur VLB</option>
+        <option value="shopify">Nur Shopify</option>
+        <option value="weclapp">Nur Weclapp</option>
+      </select>
+    </label>
+    <label style="display:flex;align-items:center;gap:5px">
+      <input type="checkbox" id="c-fehlt" checked> fehlt extern
+    </label>
+    <label style="display:flex;align-items:center;gap:5px">
+      <input type="checkbox" id="c-gleich"> gleich
+    </label>
+    <label style="display:flex;align-items:center;gap:5px">
+      <input type="checkbox" id="c-abweichung" checked> abweichung
+    </label>
+    <button class="run" id="btn-run" onclick="runCheck()">▶ Prüfen</button>
+    <button class="run" id="btn-debug" style="display:none" onclick="runDebug()">🔍 Debug</button>
+  </div>
+</header>
+
+<div id="status-bar"><span class="spinner"></span>Lade …</div>
+<div id="stats-bar">
+  <div class="stat dim"><span class="val" id="s-entries">–</span> Produkte</div>
+  <div class="stat dim"><span class="val" id="s-fields">–</span> Felder gesamt</div>
+  <div class="stat green">✅ <span class="val" id="s-equal">–</span> gleich</div>
+  <div class="stat yellow">⚡ <span class="val" id="s-diff">–</span> abweichung</div>
+  <div class="stat red">➞ <span class="val" id="s-missing">–</span> fehlt extern</div>
+</div>
+
+<div id="results"></div>
+<div id="empty">Noch kein Vergleich gestartet.</div>
+
+<script>
+var activeStatuses = ['fehlt extern', 'abweichung'];
+var activeOnly = '';
+var CLIENT_CONFIG = {};
+
+function toggleAll(cb) {
+  var limitInput = document.getElementById('c-limit');
+  var lblLimit   = document.getElementById('lbl-limit');
+  limitInput.disabled = cb.checked;
+  lblLimit.style.opacity = cb.checked ? '0.4' : '1';
+}
+
+function runDebug() {
+  var btn = document.getElementById('btn-debug');
+  btn.disabled = true;
+  setStatus('<span class="spinner"></span>Debug – Notion-Abfrage läuft …');
+  google.script.run
+    .withSuccessHandler(function(r) {
+      btn.disabled = false;
+      if (r.error) { setStatus('❌ Debug-Fehler: ' + esc(r.error)); return; }
+      setStatus(
+        '🔍 BQ: <b>' + esc(r.project + '.' + r.dataset + '.' + r.table) + '</b>'
+        + ' | Produkte: <b>' + r.products + '</b>'
+        + ' | Zeilen: <b>' + r.totalRows + '</b>'
+        + ' | Diffs: <b>' + r.diffs + '</b>'
+        + ' | Missing: <b>' + r.missing + '</b>'
+        + ' | Letzter Sync: <span style="color:#94a3b8">' + esc(r.lastSync || '–') + '</span>'
+      );
+    })
+    .withFailureHandler(function(e) {
+      btn.disabled = false;
+      setStatus('❌ Debug-Fehler: ' + esc(e.message || String(e)));
+    })
+    .debugBqQuery();
+}
+
+function runCheck() {
+  var allChecked = document.getElementById('c-all').checked;
+  var limit    = allChecked ? '999999' : document.getElementById('c-limit').value;
+  var only     = document.getElementById('c-only').value;
+  var statuses = [];
+  if (document.getElementById('c-fehlt').checked)      statuses.push('fehlt extern');
+  if (document.getElementById('c-gleich').checked)     statuses.push('gleich');
+  if (document.getElementById('c-abweichung').checked) statuses.push('abweichung');
+  activeStatuses = statuses;
+  activeOnly = only;
+  var btn = document.getElementById('btn-run');
+
+  btn.disabled = true;
+  document.getElementById('results').innerHTML = '';
+  document.getElementById('empty').classList.remove('visible');
+  document.getElementById('stats-bar').classList.remove('visible');
+  setStatus('<span class="spinner"></span>Lade aus BigQuery …');
+
+  google.script.run
+    .withSuccessHandler(showResult)
+    .withFailureHandler(function(err) {
+      btn.disabled = false;
+      setStatus('❌ Fehler: ' + esc(err.message || String(err)));
+    })
+    .getComparisonData({ limit: limit, only: only, statuses: statuses });
+}
+
+function showResult(result) {
+  var btn = document.getElementById('btn-run');
+  btn.disabled = false;
+  if (!result || !result.entries) {
+    setStatus('❌ Keine Daten erhalten.');
+    return;
+  }
+  document.getElementById('results').innerHTML = '';
+  result.entries.forEach(function(d) {
+    // Zeilen nach aktiven Status-Checkboxen filtern
+    d = Object.assign({}, d, {
+      rows: d.rows.filter(function(r) {
+        var s = r.result === 'equal' ? 'gleich' : r.result === 'diff' ? 'abweichung' : 'fehlt extern';
+        return activeStatuses.indexOf(s) !== -1;
+      })
+    });
+    renderCard(d);
+  });
+  renderStats(result.stats, result.entries.length);
+  var _tsRaw = result.syncedAt;
+  var _tsDate = _tsRaw ? (isNaN(Number(_tsRaw)) ? new Date(_tsRaw) : new Date(Number(_tsRaw) * 1000)) : null;
+  var syncInfo = (_tsDate && !isNaN(_tsDate)) ? ' (Stand: ' + _tsDate.toLocaleString('de-DE') + ')' : '';
+  setStatus('✅ ' + result.stats.total + ' Felder – ' + result.entries.length + ' Produkte' + syncInfo);
+  if (!document.getElementById('results').children.length) {
+    document.getElementById('empty').textContent = 'Keine Einträge gefunden.';
+    document.getElementById('empty').classList.add('visible');
+  }
+}
+
+// URL-/Client-Config laden, Daten erst auf Klick
+var URL_CONFIG = {};
+(function() {
+  try { URL_CONFIG = JSON.parse('<?!= urlConfig ?>'); } catch(e) {}
+  try { CLIENT_CONFIG = JSON.parse('<?!= clientConfig ?>'); } catch(e) {}
+  if (!CLIENT_CONFIG || typeof CLIENT_CONFIG.canWrite !== 'boolean') CLIENT_CONFIG = { canWrite: true };
+  if (!CLIENT_CONFIG.canWrite) {
+    setStatus('Bereit – nur Lesen (keine Schreibberechtigung).');
+    return;
+  }
+  setStatus('Bereit – auf ▶ Prüfen klicken.');
+})();
+
+function setStatus(html) {
+  document.getElementById('status-bar').innerHTML = html;
+}
+
+function renderStats(s, entryCount) {
+  document.getElementById('s-entries').textContent = entryCount;
+  document.getElementById('s-fields').textContent  = s.total;
+  document.getElementById('s-equal').textContent   = s.equal;
+  document.getElementById('s-diff').textContent    = s.diff;
+  document.getElementById('s-missing').textContent = s.missing;
+  document.getElementById('stats-bar').classList.add('visible');
+}
+
+function shopifyUrl(id) {
+  if (!id || !URL_CONFIG.shopify) return '';
+  var num = String(id).replace(/^gid:\/\/shopify\/Product\//, '');
+  return URL_CONFIG.shopify + num;
+}
+function weclappUrl(id) {
+  if (!id || !URL_CONFIG.weclapp) return '';
+  return URL_CONFIG.weclapp + encodeURIComponent(id);
+}
+function vlbUrl(productId, isbn) {
+  if (!URL_CONFIG.vlb) return '';
+  if (productId) return URL_CONFIG.vlb + encodeURIComponent(productId);
+  if (isbn) return URL_CONFIG.vlb + encodeURIComponent(isbn.replace(/[-\s]/g, ''));
+  return '';
+}
+
+function renderCard(d) {
+  var hasDiff  = d.rows.some(function(r){ return r.result === 'diff'; });
+  var hasMiss  = d.rows.some(function(r){ return r.result === 'missing'; });
+  var hasErr   = d.errs && d.errs.length > 0;
+  var flags    = d.statusFlags || {};
+  var NOT_OK   = ['not_registered', 'not_in_vlb', 'id_not_found', 'no_isbn'];
+  var hasNotRegistered = Object.keys(flags).some(function(sys) { return NOT_OK.indexOf(flags[sys]) !== -1; });
+  var allEqual = d.rows.length > 0 && !hasDiff && !hasMiss;
+
+  // Karte überspringen wenn keine sichtbaren Zeilen (alle durch Status-Filter herausgefiltert)
+  if (!d.rows.length && !hasErr && !hasNotRegistered) return;
+
+  var card = document.createElement('div');
+  card.className = 'card' + (hasDiff||hasMiss||hasNotRegistered?' has-diff':'') + (hasErr?' has-error':'');
+
+  // Status-Banner für fehlende Systeme
+  var statusLabels = { not_registered: 'Noch nicht angelegt', not_in_vlb: 'ISBN nicht in VLB', id_not_found: 'ID nicht gefunden', no_isbn: 'Keine ISBN' };
+  var missingLines = Object.keys(flags).filter(function(sys) { return NOT_OK.indexOf(flags[sys]) !== -1; })
+    .map(function(sys) { return '<span style="color:#a78bfa">🆕 '+esc(sys)+': '+(statusLabels[flags[sys]]||flags[sys])+'</span>'; });
+  var statusBanner = missingLines.length
+    ? '<div style="padding:8px 16px;font-size:12px;background:#7c3aed18;border-bottom:1px solid #7c3aed33;display:flex;gap:16px;flex-wrap:wrap">'+missingLines.join('')+'</div>'
+    : '';
+
+  var rowsHtml = statusBanner;
+  if (hasErr) rowsHtml += d.errs.map(function(e){ return '<div class="err-row">❌ '+esc(e)+'</div>'; }).join('');
+  if (allEqual && !hasNotRegistered) {
+    rowsHtml += '<div class="status-ok">✅ Alle Felder übereinstimmend</div>';
+  }
+  if (d.rows.length) {
+    rowsHtml += '<table><thead><tr><th></th><th>Feld</th><th>Notion</th><th>Extern</th><th></th></tr></thead><tbody>';
+    rowsHtml += d.rows.map(function(r) {
+      var icon     = r.result==='equal'?'✅':r.result==='diff'?'⚡':r.result==='notion_only'?'◻':'➖';
+      var extBadge = r.result==='notion_only'
+        ? '<span class="ext-badge unlinked">kein Extern</span>'
+        : '<span class="ext-badge '+r.ext.toLowerCase()+'">'+r.ext+'</span>';
+      var canUpdate = CLIENT_CONFIG.canWrite && r.result !== 'equal' && r.result !== 'notion_only' && r.notionVal && r.ext !== 'VLB';
+      var btnData  = canUpdate ? esc(JSON.stringify({ shopifyId: d.shopifyId, weclappId: d.weclappId, label: r.label, ext: r.ext, val: r.notionVal })) : '';
+      var btn      = canUpdate ? '<button class="btn-update" data-update="'+btnData+'" onclick="updateField(this)" title="Notion → '+r.ext+'">↑ Update</button>' : '';
+      return '<tr class="'+r.result+'">'
+           + '<td class="icon">'+icon+'</td>'
+           + '<td>'+esc(r.label)+'</td>'
+           + '<td class="val-cell">'+esc(r.notionVal||'–')+'</td>'
+           + '<td class="val-cell">'+extBadge+esc(r.extVal||'–')+'</td>'
+           + '<td class="update-cell">'+btn+'</td>'
+           + '</tr>';
+    }).join('');
+    rowsHtml += '</tbody></table>';
+  }
+
+  card.innerHTML =
+    '<div class="card-header" onclick="toggleCard(this.parentElement)">'
+  +   '<div class="card-title">'+esc(d.title)+'</div>'
+  +   '<div class="card-ids">'
+  +     (d.notionUrl ? '<a class="badge notion" href="'+esc(d.notionUrl)+'" onclick="event.stopPropagation();window.open(this.href);return false;" title="In Notion öffnen">Notion ↗</a>' : '')
+  +     (d.shopifyId ? '<a class="badge shopify" href="'+esc(shopifyUrl(d.shopifyId))+'" onclick="event.stopPropagation();window.open(this.href);return false;" title="In Shopify öffnen">Shopify ↗</a>' : '')
+  +     (d.weclappId ? '<a class="badge weclapp" href="'+esc(weclappUrl(d.weclappId))+'" onclick="event.stopPropagation();window.open(this.href);return false;" title="In Weclapp öffnen">Weclapp ↗</a>' : '')
+  +     ((d.vlbProductId || d.vlbIsbn) && flags['VLB'] !== 'not_in_vlb' ? '<a class="badge vlb" href="'+esc(vlbUrl(d.vlbProductId, d.vlbIsbn))+'" onclick="event.stopPropagation();window.open(this.href);return false;" title="ISBN: '+esc(d.vlbIsbn)+' – Im VLB öffnen">VLB ↗</a>' : '')
+  +   '</div>'
+  +   (CLIENT_CONFIG.canWrite ? '<button class="btn-refresh" onclick="event.stopPropagation();refreshCard(this,\''+esc(d.mappingPageId)+'\')" title="Vergleichsdaten jetzt neu laden">↺ Refresh</button>' : '')
+  +   '<span class="chevron">▾</span>'
+ + '</div>'
+  + '<div class="card-body">'+rowsHtml+'</div>';
+
+  document.getElementById('results').appendChild(card);
+}
+
+function toggleCard(card) {
+  card.classList.toggle('collapsed');
+}
+
+function esc(s) {
+  return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function refreshCard(btn, mappingPageId) {
+  btn.disabled = true;
+  btn.textContent = '…';
+  google.script.run
+    .withSuccessHandler(function(result) {
+      if (result && result.ok) {
+        btn.textContent = '✓ OK';
+        btn.classList.add('success');
+        setStatus('✅ ' + esc(result.title || mappingPageId) + ' aktualisiert (' + (result.rows || 0) + ' Felder) – Ansicht wird neu geladen…');
+        setTimeout(function() {
+          btn.textContent = '↺ Refresh';
+          btn.classList.remove('success');
+          btn.disabled = false;
+          runCheck();
+        }, 1500);
+      } else {
+        btn.textContent = '↺ Refresh';
+        btn.classList.add('error');
+        btn.disabled = false;
+        setStatus('❌ Refresh-Fehler: ' + esc((result && result.error) || 'Unbekannt'));
+        setTimeout(function() { btn.classList.remove('error'); }, 3000);
+      }
+    })
+    .withFailureHandler(function(err) {
+      btn.textContent = '↺ Refresh';
+      btn.classList.add('error');
+      btn.disabled = false;
+      setStatus('❌ Refresh-Fehler: ' + esc(err.message || String(err)));
+      setTimeout(function() { btn.classList.remove('error'); }, 3000);
+    })
+    .refreshProduct(mappingPageId);
+}
+
+function updateField(btn) {
+  var data;
+  try { data = JSON.parse(btn.getAttribute('data-update')); }
+  catch(e) { alert('Ungültige Daten: ' + e.message); return; }
+
+  btn.disabled = true;
+  btn.textContent = '…';
+  var tr = btn.closest('tr');
+
+  google.script.run
+    .withSuccessHandler(function(result) {
+      if (result && result.ok) {
+        btn.textContent = '✓';
+        btn.classList.add('success');
+        if (tr) tr.className = 'equal';
+      } else {
+        btn.textContent = '✗';
+        btn.classList.add('error');
+        btn.title = (result && result.error) || 'Fehler';
+        btn.disabled = false;
+      }
+    })
+    .withFailureHandler(function(err) {
+      btn.textContent = '✗';
+      btn.classList.add('error');
+      btn.title = err.message || String(err);
+      btn.disabled = false;
+    })
+    .updateField(data);
+}
+
+// Initialisierung: Alle-Checkbox-Status beim Laden anwenden
+(function() {
+  var cb = document.getElementById('c-all');
+  if (cb) toggleAll(cb);
+})();
+</script>
+</body>
+</html>

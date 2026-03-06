@@ -30,7 +30,7 @@ if ($envVars["GOOGLE_APPLICATION_CREDENTIALS"]) {
 }
 
 # Optionale Variablen
-foreach ($key in @("CONCURRENCY", "BQ_BATCH_SIZE", "MAX_PAGES", "SYNC_SINCE", "FUNCTION_SECRET")) {
+foreach ($key in @("CONCURRENCY", "BQ_BATCH_SIZE", "MAX_PAGES", "SYNC_MODE", "SYNC_SINCE", "FUNCTION_SECRET")) {
     if ($envVars[$key]) { $vars[$key] = $envVars[$key] }
 }
 

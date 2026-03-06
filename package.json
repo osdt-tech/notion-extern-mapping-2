@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node notion-to-bq.js",
     "vlb": "node vlb-to-bq.js",
-    "shopify": "node shopify-to-bq.js"
+    "shopify": "node shopify-to-bq.js",
+    "vergleich-view": "node create-vergleich-view.js"
   },
   "dependencies": {
     "@google-cloud/bigquery": "^7.9.0",
