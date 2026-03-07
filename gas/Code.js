@@ -27,7 +27,7 @@ var BQ_DATASET      = 'datenvergleich';
 var BQ_LOCATION     = 'EU';
 var CACHE_TTL       = 300;
 var SHOPIFY_API_VER = '2026-01';
-var APP_VERSION     = 'v83';
+var APP_VERSION     = 'v95';
 
 // ── Config ─────────────────────────────────────────────────────────────────
 
@@ -352,10 +352,11 @@ function weclappGetArticlesBatch(ids) {
 
 function weclappUpdateArticle(id, fields) {
   var base = _prop('WECLAPP_BASE_URL').replace(/\/+$/, '');
-  // Weclapp benötigt version für optimistisches Locking → vorher laden
+  // Kompletten Artikel laden, Felder ändern, komplett zurückschicken (PUT)
   var current = weclappGetArticle(id);
-  var body = Object.assign({ id: id }, fields);
-  if (current && current.version) body.version = current.version;
+  if (!current || current.__notFound) throw new Error('Weclapp-Artikel ' + id + ' nicht gefunden');
+  // Geänderte Felder in das vollständige Objekt einsetzen
+  var body = Object.assign({}, current, fields);
   return _fetchJson(base + '/article/id/' + encodeURIComponent(id), {
     method:  'put',
     headers: _weclappHeaders(),
@@ -853,7 +854,7 @@ function refreshProduct(mappingPageId) {
 
 function _cacheKey(params) {
   var statuses = (params.statuses || []).slice().sort().join(',');
-  return APP_VERSION + ':cmp:' + (params.limit || 25) + ':' + (params.only || '') + ':' + statuses;
+  return APP_VERSION + ':cmp:' + (params.limit || 25) + ':' + (params.only || '') + ':' + statuses + ':' + (params.bestellNr || '');
 }
 
 function _allCacheKeys() {
@@ -911,6 +912,8 @@ function _buildSql(params) {
   if (limit !== 999999) limit = Math.min(limit, 500);
   var only     = params.only     || '';
   var statuses = params.statuses || [];
+  // Bestell-Nr: einfaches Anfuehrungszeichen verdoppeln (SQL-sicheres Escaping)
+  var safeBestellNr = String(params.bestellNr || '').trim().replace(/'/g, "''");
 
   var viewTbl = '`' + BQ_PROJECT + '.datenvergleich.view`';
 
@@ -923,7 +926,12 @@ function _buildSql(params) {
     ? ' AND status IN (' + statuses.map(function(s) { return "'" + s.replace(/'/g, "\\'")+"'"; }).join(',') + ')'
     : '';
 
-  var topProducts = limit < 999999
+  var bestellNrFilter = safeBestellNr
+    ? " AND v.medien_id = '" + safeBestellNr + "'"
+    : '';
+
+  // Bei Bestell-Nr-Suche: kein LIMIT-Subquery noetig (max. ein Produkt)
+  var topProducts = (!safeBestellNr && limit < 999999)
     ? '(SELECT medien_id FROM ' + viewTbl
       + ' WHERE 1=1' + sysFilter + statusFilter
       + ' GROUP BY medien_id ORDER BY medien_id LIMIT ' + limit + ')'
@@ -940,10 +948,11 @@ function _buildSql(params) {
     + '  v.wert_verbum,'
     + '  v.wert_extern,'
     + '  v.schnittstelle,'
+    + '  v.extern_id,'
     + '  v.status'
     + ' FROM ' + viewTbl + ' v'
     + joinTop
-    + ' WHERE 1=1' + sysFilter
+    + ' WHERE 1=1' + sysFilter + bestellNrFilter
     + ' ORDER BY v.medien_id, v.schnittstelle, v.feldname';
 }
 
@@ -1010,6 +1019,10 @@ function _processRows(dataRows) {
     var prod = productsMap[key];
     // Titel aktualisieren sobald ein Wert vorhanden
     if (!prod.title && row.titel) prod.title = row.titel;
+
+    // extern_id zuweisen basierend auf Schnittstelle
+    if (row.schnittstelle === 'weclapp' && row.extern_id) prod.weclappId = row.extern_id;
+    if (row.schnittstelle === 'shopify' && row.extern_id) prod.shopifyId = row.extern_id;
 
     var result = row.status === 'gleich'     ? 'equal'
                : row.status === 'abweichung' ? 'diff'
@@ -1117,19 +1130,47 @@ function updateField(data) {
       if (!fn) throw new Error('Kein Shopify-Update für "' + label + '" definiert');
       fn();
     } else if (ext === 'Weclapp') {
+      // Mapping: Label → { weclapp API-Felder, BQ-Spalte }
       var wmap = {
-        'Titel':              function(){ weclappUpdateArticle(weclappId, { name: val }); },
-        'ISBN / EAN':         function(){ weclappUpdateArticle(weclappId, { ean: val }); },
-        'Bestell-Nr / SKU':   function(){ weclappUpdateArticle(weclappId, { articleNumber: val }); },
-        'Verkaufspreis':      function(){ weclappUpdateArticle(weclappId, { sellPrice: parseFloat(val) }); },
-        'Aktiv':              function(){ weclappUpdateArticle(weclappId, { active: val === 'true' }); },
-        'Kurzbeschreibung':   function(){ weclappUpdateArticle(weclappId, { shortDescription1: val }); },
-        'Gewicht (kg)':       function(){ weclappUpdateArticle(weclappId, { articleNetWeight: parseFloat(val) }); },
-        'Erscheinungsdatum':  function(){ weclappUpdateArticle(weclappId, { launchDate: new Date(normDate_(val)).getTime() }); },
+        'Titel':              { api: { name: val },                                          bqCol: 'name' },
+        'ISBN / EAN':         { api: { ean: val },                                           bqCol: 'ean' },
+        'Bestell-Nr / SKU':   { api: { articleNumber: val },                                 bqCol: 'articlenumber' },
+        'Verkaufspreis':      { api: { sellPrice: parseFloat(val) },                         bqCol: null },
+        'Aktiv':              { api: { active: val === 'true' },                             bqCol: 'active' },
+        'Kurzbeschreibung':   { api: { shortDescription1: val },                            bqCol: 'shortdescription1' },
+        'Langbeschreibung':   { api: { longText: val },                                     bqCol: 'longtext' },
+        'Zolltarifnummer':    { api: { systemCode: val },                                   bqCol: 'systemcode' },
+        'Gewicht (kg)':       { api: { articleNetWeight: parseFloat(val) },                  bqCol: 'articlegrossweight' },
+        'Gewicht in Gramm':   { api: { articleGrossWeight: parseFloat(val) / 1000 },          bqCol: 'articlegrossweight' },
+        'Erscheinungsdatum':  { api: { launchDate: new Date(normDate_(val)).getTime() },     bqCol: 'launchdate' },
       };
-      var wfn = wmap[label];
-      if (!wfn) throw new Error('Kein Weclapp-Update für "' + label + '" definiert');
-      wfn();
+      var wdef = wmap[label];
+      if (!wdef) throw new Error('Kein Weclapp-Update für "' + label + '" definiert');
+      weclappUpdateArticle(weclappId, wdef.api);
+      // BQ-Datensatz aktualisieren damit die View beim nächsten Laden aktuell ist
+      if (wdef.bqCol && weclappId) {
+        try {
+          var bqVal = Object.values(wdef.api)[0];
+          var safeId = String(weclappId).replace(/'/g, "''");
+          var setExpr;
+          if (typeof bqVal === 'boolean') {
+            setExpr = wdef.bqCol + ' = ' + (bqVal ? 'TRUE' : 'FALSE');
+          } else if (typeof bqVal === 'number') {
+            setExpr = wdef.bqCol + ' = ' + bqVal;
+          } else {
+            var safeVal = String(bqVal).replace(/'/g, "''").replace(/\\/g, '\\\\');
+            setExpr = wdef.bqCol + " = '" + safeVal + "'";
+          }
+          var updateSql = 'UPDATE `' + BQ_PROJECT + '.' + BQ_DATASET + '.weclapp_artikel` '
+            + 'SET ' + setExpr + " WHERE weclapp_id = '" + safeId + "'";
+          _bqQuery(updateSql);
+        } catch(bqErr) {
+          Logger.log('[BQ Update] Fehler: ' + bqErr.message);
+          // BQ-Fehler nicht an den User durchreichen – Weclapp-Update hat geklappt
+        }
+      }
+      // Cache leeren
+      try { invalidateCache(); } catch(e2) {}
     } else {
       throw new Error('Unbekanntes System: ' + ext);
     }

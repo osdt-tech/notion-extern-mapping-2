@@ -66,14 +66,15 @@ const SOURCES = [
     tableId:       'weclapp_artikel',
     alias:         't4',
     dedupKey:      'weclapp_id',
-    joinCondition: 't1.weclapp_id = t4.weclapp_id',
+    joinCondition: 't1.weclapp_id = t4.weclapp_id', //shortdescription1
     fields: [
-      { verbumField: 'titel', externField: 'name', feldname: 'titel' },
-      { verbumField: 'bestell_nr', externField: 'articlenumber', feldname: 'bestell_nr' },
-       { verbumField: 'zolltarifnummer', externField: 'systemcode', feldname: 'Zolltarifnummer' },
-        { verbumField: 'mitwirkende',
-          verbumExpr: `(SELECT STRING_AGG(m.title, '; ') FROM UNNEST(t1.mitwirkende) AS m WHERE m.urheberart = 'Autor')`,
-          externField: 'manufacturer_name', feldname: 'Autor' },
+      { verbumField: 'titel', externField: 'name', feldname: 'Titel' },
+      { verbumField: 'bestell_nr', externField: 'articlenumber', feldname: 'Bestell-Nr / SKU' },
+      { verbumField: 'zolltarifnummer', externField: 'systemcode', feldname: 'Zolltarifnummer' },
+      { verbumField: 'buchinfo_kurz', externField: 'shortdescription1', feldname: 'Kurzbeschreibung' },
+      { verbumField: 'buchinfo_lang', externField: 'longtext', feldname: 'Langbeschreibung' },
+      { verbumField: 'gewicht_in_gramm', externField: 'articlegrossweight', externExpr: 'CAST(CAST(t4.articlegrossweight AS FLOAT64) * 1000 AS INT64)', feldname: 'Gewicht in Gramm' },
+      { verbumField: 'mitwirkende', verbumExpr: `(SELECT STRING_AGG(m.title, '; ') FROM UNNEST(t1.mitwirkende) AS m WHERE m.urheberart = 'Autor')`, externField: 'manufacturer_name', feldname: 'Autor' },
     ],
   },
 ];
@@ -87,11 +88,17 @@ function asStr(expr) {
   return `CAST(${expr} AS STRING)`;
 }
 
+/** Normalisiert einen String-Ausdruck für den Vergleich: <br>-Tags + Zeilenumbrüche → Leerzeichen, mehrfache Leerzeichen zusammenfassen */
+function norm(expr) {
+  // 1) <br>-Tags → Leerzeichen  2) Zeilenumbrüche → Leerzeichen  3) Mehrfach-Whitespace → ein Leerzeichen
+  return `LOWER(TRIM(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(${asStr(expr)}, r'<br\\s*/?>', ' '), r'[\\r\\n]+', ' '), r'\\s{2,}', ' ')))`;
+}
+
 /** Baut einen einzelnen SELECT-Block für eine Quelle + ein Feld */
 function buildBlock(source, field) {
   const m  = MASTER;
   const vb = field.verbumExpr ?? `${m.alias}.${field.verbumField}`;
-  const ex = `${source.alias}.${field.externField}`;
+  const ex = field.externExpr ?? `${source.alias}.${field.externField}`;
 
   // Beide Seiten deduplizieren – verhindert Zeilen-Multiplikation durch Duplikate
   // in verbum_medien (APPEND-Sync) und in externen Tabellen
@@ -109,10 +116,11 @@ SELECT
   ${asStr(vb)}                                   AS wert_verbum,
   ${asStr(ex)}                                   AS wert_extern,
   '${source.name}'                               AS schnittstelle,
+  ${asStr(`${source.alias}.${externKey}`)}        AS extern_id,
   CASE
     WHEN ${ex} IS NULL
       THEN 'fehlt extern'
-    WHEN LOWER(TRIM(${asStr(vb)})) = LOWER(TRIM(${asStr(ex)}))
+    WHEN ${norm(vb)} = ${norm(ex)}
       THEN 'gleich'
     ELSE 'abweichung'
   END                                            AS status

@@ -18,6 +18,9 @@
   .controls { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; flex: 1; }
   .controls label { font-size: 12px; color: var(--dim); }
   .controls input[type=number] { width: 70px; background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 5px 8px; border-radius: 6px; font-size: 13px; }
+  .controls input[type=text] { background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 5px 8px; border-radius: 6px; font-size: 13px; width: 130px; }
+  .controls input[type=text]:focus { outline: none; border-color: var(--accent); }
+  .sep { width: 1px; height: 22px; background: var(--border); margin: 0 2px; }
   .controls select { background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 5px 8px; border-radius: 6px; font-size: 13px; cursor: pointer; }
   .controls input[type=checkbox] { accent-color: var(--accent); width: 14px; height: 14px; cursor: pointer; }
   button.run { background: var(--accent); color: #fff; border: none; padding: 7px 18px; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; transition: opacity .15s; white-space: nowrap; }
@@ -127,6 +130,10 @@
     <label style="display:flex;align-items:center;gap:5px">
       <input type="checkbox" id="c-abweichung" checked> abweichung
     </label>
+    <div class="sep"></div>
+    <label style="display:flex;align-items:center;gap:5px">
+      Bestell-Nr <input type="text" id="c-bestell" placeholder="z.B. VM-001" title="Direkt nach Bestell-Nr suchen" oninput="onBestellNrInput()">
+    </label>
     <button class="run" id="btn-run" onclick="runCheck()">▶ Prüfen</button>
     <button class="run" id="btn-debug" style="display:none" onclick="runDebug()">🔍 Debug</button>
   </div>
@@ -180,14 +187,30 @@ function runDebug() {
     .debugBqQuery();
 }
 
+function onBestellNrInput() {
+  var val = document.getElementById('c-bestell').value.trim();
+  // Wenn Bestell-Nr gesetzt: Limit/Status-Filter ausgrauen (werden ignoriert)
+  var dimmed = !!val;
+  ['c-limit','c-all','c-fehlt','c-gleich','c-abweichung','c-only'].forEach(function(id) {
+    var el = document.getElementById(id);
+    if (el) el.disabled = dimmed;
+  });
+  document.getElementById('lbl-limit').style.opacity = dimmed ? '0.4' : '';
+}
+
 function runCheck() {
+  var bestellNr = document.getElementById('c-bestell').value.trim();
   var allChecked = document.getElementById('c-all').checked;
-  var limit    = allChecked ? '999999' : document.getElementById('c-limit').value;
-  var only     = document.getElementById('c-only').value;
+  var limit    = bestellNr ? '999999' : (allChecked ? '999999' : document.getElementById('c-limit').value);
+  var only     = bestellNr ? '' : document.getElementById('c-only').value;
   var statuses = [];
-  if (document.getElementById('c-fehlt').checked)      statuses.push('fehlt extern');
-  if (document.getElementById('c-gleich').checked)     statuses.push('gleich');
-  if (document.getElementById('c-abweichung').checked) statuses.push('abweichung');
+  if (!bestellNr) {
+    if (document.getElementById('c-fehlt').checked)      statuses.push('fehlt extern');
+    if (document.getElementById('c-gleich').checked)     statuses.push('gleich');
+    if (document.getElementById('c-abweichung').checked) statuses.push('abweichung');
+  } else {
+    statuses = ['fehlt extern', 'gleich', 'abweichung'];
+  }
   activeStatuses = statuses;
   activeOnly = only;
   var btn = document.getElementById('btn-run');
@@ -196,7 +219,8 @@ function runCheck() {
   document.getElementById('results').innerHTML = '';
   document.getElementById('empty').classList.remove('visible');
   document.getElementById('stats-bar').classList.remove('visible');
-  setStatus('<span class="spinner"></span>Lade aus BigQuery …');
+  var statusMsg = bestellNr ? 'Suche Bestell-Nr <b>' + esc(bestellNr) + '</b> …' : 'Lade aus BigQuery …';
+  setStatus('<span class="spinner"></span>' + statusMsg);
 
   google.script.run
     .withSuccessHandler(showResult)
@@ -204,7 +228,7 @@ function runCheck() {
       btn.disabled = false;
       setStatus('❌ Fehler: ' + esc(err.message || String(err)));
     })
-    .getComparisonData({ limit: limit, only: only, statuses: statuses });
+    .getComparisonData({ limit: limit, only: only, statuses: statuses, bestellNr: bestellNr });
 }
 
 function showResult(result) {

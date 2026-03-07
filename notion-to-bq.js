@@ -2,6 +2,8 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // notion-to-bq.js
 //SYNC_SINCE=all MAX_PAGES=5 node notion-to-bq.js --recreate
+//BESTELL_NR=VM-001 node notion-to-bq.js          ← gezielt eine Bestell-Nr
+//node notion-to-bq.js --bestell-nr=8652000         ← alternativ als CLI-Arg
 // Liest ALLE Seiten aus einer Notion-Datenbank, löst alle Relationen auf
 // und überträgt die Daten 1:1 in eine BigQuery-Tabelle.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -22,6 +24,10 @@ const MAX_PAGES     = parseInt(process.env.MAX_PAGES     || '0',   10); // 0 = a
 const SYNC_SINCE    = process.env.SYNC_SINCE || 'today';             // 'today', 'yesterday', oder ISO-String
 const FUNCTION_SECRET = (process.env.FUNCTION_SECRET || '').trim();
 const RECREATE_TABLE  = process.argv.includes('--recreate');
+
+// Bestell-Nr: aus Env oder --bestell-nr=xxx CLI-Arg
+const _bestellNrArg = (process.argv.find((a) => /^--bestell-nr=/i.test(a)) || '').replace(/^--bestell-nr=/i, '').trim();
+const BESTELL_NR    = (_bestellNrArg || (process.env.BESTELL_NR || '').trim()) || null;
 
 if (!DATABASE_ID || !BQ_PROJECT_ID || !BQ_DATASET) {
   console.error('Fehlende Pflicht-Variablen: NOTION_DATA_SOURCE_ID, BQ_PROJECT_ID, BQ_DATASET');
@@ -453,31 +459,31 @@ async function fetchAllPages() {
   const pages = [];
   let cursor;
   const batchSize = MAX_PAGES > 0 ? Math.min(MAX_PAGES, 100) : 100;
-  const syncStartDate = getSyncStartDate();
+  const syncStartDate = !BESTELL_NR ? getSyncStartDate() : null;
 
-  if (syncStartDate) {
+  if (BESTELL_NR) {
+    console.log(`  Filter: Bestell-Nr = "${BESTELL_NR}"`);
+  } else if (syncStartDate) {
     console.log(`  Filter: last_edited_time >= ${syncStartDate}`);
   } else {
     console.log('  Filter: kein Zeitfilter (SYNC_SINCE=all)');
   }
-  
+
+  const apiFilter = BESTELL_NR
+    ? { property: 'Bestell-Nr', formula: { string: { equals: BESTELL_NR } } }
+    : syncStartDate
+      ? { timestamp: 'last_edited_time', last_edited_time: { on_or_after: syncStartDate } }
+      : null;
+
   do {
     const queryOpts = {
       data_source_id: DATABASE_ID,
       start_cursor: cursor,
       page_size: batchSize,
     };
-    
-    // Filter nach last_edited_time hinzufügen
-    if (syncStartDate) {
-      queryOpts.filter = {
-        timestamp: 'last_edited_time',
-        last_edited_time: {
-          on_or_after: syncStartDate,
-        },
-      };
-    }
-    
+
+    if (apiFilter) queryOpts.filter = apiFilter;
+
     const res = await notion.dataSources.query(queryOpts);
     pages.push(...res.results);
     if (MAX_PAGES > 0 && pages.length >= MAX_PAGES) {
@@ -488,6 +494,7 @@ async function fetchAllPages() {
     process.stdout.write(`\r  → ${pages.length} Seiten geladen...`);
   } while (cursor);
   console.log();
+
   return pages;
 }
 
@@ -573,10 +580,13 @@ async function ensureTable(tableName, schema) {
     meta.schema = meta.schema || { fields: [] };
     meta.schema.fields = meta.schema.fields || [];
 
+    // Normalisiert BQ-Typ-Aliase: FLOAT=FLOAT64, BOOLEAN=BOOL, INTEGER=INT64
+    const normType = (t) => ({ FLOAT: 'FLOAT64', BOOLEAN: 'BOOL', INTEGER: 'INT64' })[t] || t;
+
     // Prüfe ob Typ-Konflikte vorliegen (z.B. STRING → RECORD nicht in-place möglich)
     const conflicts = schema.filter(desired => {
       const existing = meta.schema.fields.find(f => f.name === desired.name);
-      return existing && existing.type !== desired.type;
+      return existing && normType(existing.type) !== normType(desired.type);
     });
 
     if (conflicts.length > 0) {
@@ -663,6 +673,7 @@ async function main() {
   console.log(' Notion → BigQuery Sync');
   console.log(`   DB  : ${DATABASE_ID}`);
   console.log(`   BQ  : ${BQ_PROJECT_ID}.${BQ_DATASET}`);
+  if (BESTELL_NR) console.log(`   NR  : ${BESTELL_NR}`);
   console.log('═══════════════════════════════════════════════════\n');
 
   // ── 1. Notion Datenbankschema laden ────────────────────────────────────────
