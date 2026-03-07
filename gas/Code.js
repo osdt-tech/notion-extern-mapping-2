@@ -27,7 +27,7 @@ var BQ_DATASET      = 'datenvergleich';
 var BQ_LOCATION     = 'EU';
 var CACHE_TTL       = 300;
 var SHOPIFY_API_VER = '2026-01';
-var APP_VERSION     = 'v95';
+var APP_VERSION     = 'v96';
 
 // ── Config ─────────────────────────────────────────────────────────────────
 
@@ -941,6 +941,11 @@ function _buildSql(params) {
     ? ' INNER JOIN ' + topProducts + ' tp ON v.medien_id = tp.medien_id'
     : '';
 
+  var vmTbl = '`' + BQ_PROJECT + '.datenvergleich.verbum_medien`';
+  var vmJoin = ' LEFT JOIN (SELECT bestell_nr, page_id, vlb_id FROM ' + vmTbl
+    + ' QUALIFY ROW_NUMBER() OVER (PARTITION BY bestell_nr ORDER BY bestell_nr) = 1'
+    + ') vm ON vm.bestell_nr = v.medien_id';
+
   return 'SELECT'
     + '  v.medien_id,'
     + "  MAX(IF(v.feldname = 'titel', v.wert_verbum, NULL)) OVER (PARTITION BY v.medien_id) AS titel,"
@@ -949,9 +954,12 @@ function _buildSql(params) {
     + '  v.wert_extern,'
     + '  v.schnittstelle,'
     + '  v.extern_id,'
-    + '  v.status'
+    + '  v.status,'
+    + '  vm.page_id AS notion_page_id,'
+    + '  vm.vlb_id'
     + ' FROM ' + viewTbl + ' v'
     + joinTop
+    + vmJoin
     + ' WHERE 1=1' + sysFilter + bestellNrFilter
     + ' ORDER BY v.medien_id, v.schnittstelle, v.feldname';
 }
@@ -1019,6 +1027,16 @@ function _processRows(dataRows) {
     var prod = productsMap[key];
     // Titel aktualisieren sobald ein Wert vorhanden
     if (!prod.title && row.titel) prod.title = row.titel;
+
+    // Notion-URL aus page_id konstruieren
+    if (!prod.notionUrl && row.notion_page_id) {
+      prod.notionUrl = 'https://notion.so/' + String(row.notion_page_id).replace(/-/g, '');
+    }
+    // VLB-ID für VLB-Badge
+    if (!prod.vlbProductId && row.vlb_id) {
+      prod.vlbProductId = row.vlb_id;
+      prod.vlbIsbn = row.vlb_id;
+    }
 
     // extern_id zuweisen basierend auf Schnittstelle
     if (row.schnittstelle === 'weclapp' && row.extern_id) prod.weclappId = row.extern_id;
